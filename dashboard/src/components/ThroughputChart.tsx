@@ -5,6 +5,7 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  Legend,
   ResponsiveContainer,
 } from 'recharts'
 import { useEffect, useState } from 'react'
@@ -29,20 +30,24 @@ export function ThroughputChart() {
       }
     }
     load()
-    const interval = setInterval(load, 30000)
+    const interval = setInterval(load, 30_000)
     return () => clearInterval(interval)
   }, [])
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5">
-      <h3 className="text-sm font-semibold text-gray-600 mb-4">Throughput — jobs/min (last hour)</h3>
+    <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-700 p-5">
+      <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 mb-4">
+        Throughput — jobs/min (last hour)
+      </h3>
       <ResponsiveContainer width="100%" height={200}>
         <BarChart data={data}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
           <XAxis dataKey="time" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
           <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
           <Tooltip />
-          <Bar dataKey="count" fill="#10b981" radius={[3, 3, 0, 0]} />
+          <Legend wrapperStyle={{ fontSize: 11 }} />
+          <Bar dataKey="completed" fill="#10b981" radius={[3, 3, 0, 0]} stackId="a" />
+          <Bar dataKey="failed"    fill="#ef4444" radius={[3, 3, 0, 0]} stackId="a" />
         </BarChart>
       </ResponsiveContainer>
     </div>

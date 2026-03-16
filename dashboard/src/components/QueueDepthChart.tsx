@@ -24,7 +24,7 @@ export function QueueDepthChart({ liveMetrics }: Props) {
         ...prev,
         {
           time: new Date(liveMetrics.timestamp).toLocaleTimeString(),
-          depth: liveMetrics.queue_depth,
+          depth: liveMetrics.queue_depth.total,
         },
       ].slice(-60) // keep 60 data points (2 min at 2s intervals)
       return next
@@ -32,8 +32,8 @@ export function QueueDepthChart({ liveMetrics }: Props) {
   }, [liveMetrics])
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5">
-      <h3 className="text-sm font-semibold text-gray-600 mb-4">Queue Depth (live)</h3>
+    <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-700 p-5">
+      <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 mb-4">Queue Depth (live)</h3>
       <ResponsiveContainer width="100%" height={200}>
         <AreaChart data={history}>
           <defs>

@@ -19,8 +19,8 @@ export function WorkerUtilization({ liveMetrics, totalWorkers = 10 }: Props) {
   const color = current > 80 ? 'bg-red-500' : current > 50 ? 'bg-yellow-500' : 'bg-green-500'
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5">
-      <h3 className="text-sm font-semibold text-gray-600 mb-4">Worker Utilization</h3>
+    <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-700 p-5">
+      <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 mb-4">Worker Utilization</h3>
       <div className="flex items-end gap-1 h-20">
         {history.map((pct, i) => (
           <div

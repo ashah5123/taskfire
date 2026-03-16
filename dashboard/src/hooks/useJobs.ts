@@ -1,42 +1,87 @@
-import { useEffect, useState, useCallback } from 'react'
+import {
+  useQuery,
+  useMutation,
+  useQueryClient,
+  keepPreviousData,
+} from '@tanstack/react-query'
 import { api } from '../api/client'
-import type { Job } from '../types/job'
+import type { CreateJobInput, ListJobsParams, RetryJobInput } from '../types/job'
 
-export function useJobs(params?: { status?: string; page?: number; limit?: number }) {
-  const [jobs, setJobs] = useState<Job[]>([])
-  const [total, setTotal] = useState(0)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+// ── Query key factory ─────────────────────────────────────────────────────────
 
-  const fetch = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const data = await api.jobs.list(params)
-      setJobs(data.jobs)
-      setTotal(data.total)
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setLoading(false)
-    }
-  }, [params?.status, params?.page, params?.limit])
+export const jobKeys = {
+  all:    ['jobs'] as const,
+  list:   (params: ListJobsParams) => ['jobs', 'list', params] as const,
+  detail: (id: string)             => ['jobs', 'detail', id]   as const,
+  logs:   (id: string)             => ['jobs', 'logs', id]     as const,
+}
 
-  useEffect(() => {
-    fetch()
-    const interval = setInterval(fetch, 5000)
-    return () => clearInterval(interval)
-  }, [fetch])
+// ── Job list hook ─────────────────────────────────────────────────────────────
 
-  const retry = useCallback(async (id: string) => {
-    await api.jobs.retry(id)
-    fetch()
-  }, [fetch])
+export function useJobs(params: ListJobsParams = {}) {
+  const queryClient = useQueryClient()
 
-  const cancel = useCallback(async (id: string) => {
-    await api.jobs.cancel(id)
-    fetch()
-  }, [fetch])
+  const query = useQuery({
+    queryKey:       jobKeys.list(params),
+    queryFn:        () => api.jobs.list(params),
+    refetchInterval: 5_000,
+    staleTime:       2_000,
+    placeholderData: keepPreviousData,
+  })
 
-  return { jobs, total, loading, error, refetch: fetch, retry, cancel }
+  const enqueueMutation = useMutation({
+    mutationFn: (input: CreateJobInput) => api.jobs.create(input),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: jobKeys.all }),
+  })
+
+  const cancelMutation = useMutation({
+    mutationFn: (id: string) => api.jobs.cancel(id),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: jobKeys.all }),
+  })
+
+  const retryMutation = useMutation({
+    mutationFn: ({ id, input }: { id: string; input?: RetryJobInput }) =>
+      api.jobs.retry(id, input),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: jobKeys.all }),
+  })
+
+  return {
+    jobs:       query.data?.jobs  ?? [],
+    total:      query.data?.total ?? 0,
+    pages:      query.data?.pages ?? 1,
+    isLoading:  query.isLoading,
+    isFetching: query.isFetching,
+    error:      query.error,
+
+    enqueueJob: enqueueMutation.mutateAsync,
+    cancelJob:  cancelMutation.mutateAsync,
+    retryJob:   (id: string, input?: RetryJobInput) => retryMutation.mutateAsync({ id, input }),
+
+    isEnqueueing: enqueueMutation.isPending,
+    isCancelling: cancelMutation.isPending,
+    isRetrying:   retryMutation.isPending,
+  }
+}
+
+// ── Single job hook ───────────────────────────────────────────────────────────
+
+export function useJob(id: string) {
+  return useQuery({
+    queryKey:        jobKeys.detail(id),
+    queryFn:         () => api.jobs.get(id),
+    refetchInterval: 5_000,
+    staleTime:       2_000,
+    enabled:         Boolean(id),
+  })
+}
+
+// ── Job logs hook ─────────────────────────────────────────────────────────────
+
+export function useJobLogs(id: string) {
+  return useQuery({
+    queryKey: jobKeys.logs(id),
+    queryFn:  () => api.jobs.getLogs(id),
+    staleTime: 10_000,
+    enabled:   Boolean(id),
+  })
 }

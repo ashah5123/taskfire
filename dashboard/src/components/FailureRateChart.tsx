@@ -36,8 +36,8 @@ export function FailureRateChart() {
   const formatPct = (v: number) => `${(v * 100).toFixed(1)}%`
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5">
-      <h3 className="text-sm font-semibold text-gray-600 mb-4">Failure Rate (last hour)</h3>
+    <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-700 p-5">
+      <h3 className="text-sm font-semibold text-gray-600 dark:text-gray-400 mb-4">Failure Rate (last hour)</h3>
       <ResponsiveContainer width="100%" height={200}>
         <LineChart data={data}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
