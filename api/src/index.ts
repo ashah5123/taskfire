@@ -11,6 +11,8 @@ import {
   stopEventForwarding,
   startMetricsBroadcast,
   stopMetricsBroadcast,
+  startHeartbeat,
+  stopHeartbeat,
 } from './websocket/handler'
 import { connectRedisWithRetry, closeRedis } from './services/redis'
 import { connectPostgresWithRetry, closePostgres } from './services/postgres'
@@ -109,6 +111,7 @@ async function bootstrap(): Promise<void> {
   // ── Real-time infrastructure ──────────────────────────────────────────────
   await startEventForwarding()
   startMetricsBroadcast()
+  startHeartbeat()
 
   // ── Listen ────────────────────────────────────────────────────────────────
   const port = parseInt(process.env.PORT ?? '3001', 10)
@@ -122,6 +125,7 @@ async function bootstrap(): Promise<void> {
 async function shutdown(signal: string): Promise<void> {
   server.log.info({ signal }, 'shutdown signal received')
   try {
+    stopHeartbeat()
     stopMetricsBroadcast()
     await stopEventForwarding()
     await server.close()
