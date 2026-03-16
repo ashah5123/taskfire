@@ -8,6 +8,7 @@ import { ThroughputChart } from './components/ThroughputChart'
 import { FailureRateChart } from './components/FailureRateChart'
 import { WorkerUtilization } from './components/WorkerUtilization'
 import { JobTable } from './components/JobTable'
+import { DeadLetterPanel } from './components/DeadLetterPanel'
 import { useQuery } from '@tanstack/react-query'
 import { api } from './api/client'
 
@@ -104,90 +105,7 @@ function OverviewPage() {
 // ── Dead Letter page ───────────────────────────────────────────────────────────
 
 function DeadLetterPage() {
-  const { data, isLoading, error } = useQuery({
-    queryKey: ['dlq'],
-    queryFn: () => api.metrics.deadLetter({ limit: 50 }),
-    refetchInterval: 15_000,
-  })
-
-  if (isLoading) {
-    return (
-      <div className="space-y-2">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <div key={i} className="h-14 rounded-lg bg-gray-100 dark:bg-gray-800 animate-pulse" />
-        ))}
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 p-4 text-sm text-red-700 dark:text-red-300">
-        Failed to load dead-letter queue.
-      </div>
-    )
-  }
-
-  const jobs = data?.jobs ?? []
-
-  if (jobs.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-20 text-gray-400 dark:text-gray-600">
-        <span className="text-4xl mb-3">✓</span>
-        <p className="text-sm font-medium">Dead-letter queue is empty</p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-3">
-      <p className="text-sm text-gray-500 dark:text-gray-400">{data?.total ?? 0} total entries</p>
-      <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-              <th className="px-4 py-3 text-left font-semibold text-gray-600 dark:text-gray-400">ID</th>
-              <th className="px-4 py-3 text-left font-semibold text-gray-600 dark:text-gray-400">Type</th>
-              <th className="px-4 py-3 text-left font-semibold text-gray-600 dark:text-gray-400">Priority</th>
-              <th className="px-4 py-3 text-left font-semibold text-gray-600 dark:text-gray-400">Retries</th>
-              <th className="px-4 py-3 text-left font-semibold text-gray-600 dark:text-gray-400">Error</th>
-              <th className="px-4 py-3 text-left font-semibold text-gray-600 dark:text-gray-400">Failed</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-            {jobs.map((job) => (
-              <tr key={job.id} className="bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                <td className="px-4 py-3 font-mono text-xs text-gray-500 dark:text-gray-400">
-                  {job.id.slice(0, 8)}…
-                </td>
-                <td className="px-4 py-3 text-gray-900 dark:text-gray-100 font-medium">{job.type}</td>
-                <td className="px-4 py-3">
-                  <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold ${
-                    job.priority_label === 'high'
-                      ? 'bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300'
-                      : job.priority_label === 'medium'
-                      ? 'bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300'
-                      : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'
-                  }`}>
-                    {job.priority_label}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
-                  {job.retry_count}/{job.max_retries}
-                </td>
-                <td className="px-4 py-3 text-red-600 dark:text-red-400 text-xs font-mono max-w-xs truncate">
-                  {job.error ?? '—'}
-                </td>
-                <td className="px-4 py-3 text-xs text-gray-500 dark:text-gray-400">
-                  {job.failed_at ? new Date(job.failed_at).toLocaleString() : '—'}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
+  return <DeadLetterPanel />
 }
 
 // ── Workers page ───────────────────────────────────────────────────────────────
