@@ -1,18 +1,45 @@
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  scrape_interval:     10s
+  evaluation_interval: 10s
+  scrape_timeout:      8s
+
+  external_labels:
+    cluster: taskfire
+    env:     production
+
+rule_files: []
 
 scrape_configs:
-  - job_name: 'taskfire-worker'
-    static_configs:
-      - targets: ['worker:9090']
-    metrics_path: /metrics
 
-  - job_name: 'taskfire-api'
+  # ── Go worker ───────────────────────────────────────────────────────────────
+  - job_name: taskfire-worker
     static_configs:
-      - targets: ['api:3001']
+      - targets:
+          - worker:9090
+        labels:
+          service:   worker
+          language:  go
     metrics_path: /metrics
+    scheme:       http
+    scrape_interval: 10s
 
-  - job_name: 'prometheus'
+  # ── Node.js Fastify API ─────────────────────────────────────────────────────
+  - job_name: taskfire-api
     static_configs:
-      - targets: ['localhost:9090']
+      - targets:
+          - api:3001
+        labels:
+          service:   api
+          language:  nodejs
+    metrics_path: /metrics
+    scheme:       http
+    scrape_interval: 10s
+
+  # ── Prometheus self-monitoring ──────────────────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090
+        labels:
+          service: prometheus
+    scrape_interval: 30s
