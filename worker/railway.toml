@@ -1,0 +1,27 @@
+# ── Taskfire Worker — Railway service configuration ───────────────────────────
+#
+# Set this service's Root Directory to "worker/" in the Railway dashboard.
+#
+# Required environment variables (Railway dashboard → Variables):
+#   REDIS_URL    = ${{Redis.REDIS_URL}}
+#   DATABASE_URL = ${{Postgres.DATABASE_URL}}
+#
+# Optional:
+#   WORKER_MIN   = 2       (minimum goroutines)
+#   WORKER_MAX   = 16      (maximum goroutines — tune to your plan's vCPU)
+#   METRICS_PORT = 9090
+#   LOG_LEVEL    = info
+
+[build]
+builder         = "DOCKERFILE"
+dockerfilePath  = "Dockerfile"
+watchPatterns   = ["**/*.go", "go.mod", "go.sum"]
+
+[deploy]
+# The worker exposes its Prometheus /metrics endpoint on METRICS_PORT (9090).
+# Railway's internal health check hits this path over the service's internal
+# network — it does not need to be publicly exposed.
+healthcheckPath         = "/metrics"
+healthcheckTimeout      = 120
+restartPolicyType       = "ON_FAILURE"
+restartPolicyMaxRetries = 10

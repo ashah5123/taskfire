@@ -13,13 +13,14 @@
 [![Node.js](https://img.shields.io/badge/Node.js-20-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-f0a500?style=flat-square)](LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/aaravshah/taskfire/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/aaravshah/taskfire/actions)
+[![CI](https://img.shields.io/github/actions/workflow/status/ashah5123/taskfire/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/ashah5123/taskfire/actions)
 [![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat-square&logo=redis&logoColor=white)](https://redis.io)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-4169E1?style=flat-square&logo=postgresql&logoColor=white)](https://www.postgresql.org)
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/ashah5123/taskfire)
 
 **A production-grade distributed background job engine with a priority queue, DAG dependency resolver, and real-time dashboard.**
 
-[Getting Started](#getting-started) · [Architecture](#architecture) · [API Reference](#api-reference) · [How It Works](#how-it-works) · [Contributing](#contributing)
+[Getting Started](#getting-started) · [Deploy on Railway](#deploy-on-railway) · [Architecture](#architecture) · [API Reference](#api-reference) · [How It Works](#how-it-works) · [Contributing](#contributing)
 
 </div>
 
@@ -148,6 +149,113 @@ The worker exposes a `/metrics` endpoint with:
 | `taskfire_worker_utilization_gauge` | Gauge | `worker_id` |
 | `taskfire_dead_letter_queue_size` | Gauge | — |
 | `taskfire_active_workers_total` | Gauge | — |
+
+---
+
+## Deploy on Railway
+
+Railway is the fastest way to get Taskfire running in the cloud — no server management, free tier available, and the managed Redis and PostgreSQL plugins wire up automatically.
+
+### One-click deploy
+
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/ashah5123/taskfire)
+
+### Manual setup (5 minutes)
+
+#### 1 — Create a Railway project
+
+Sign up at [railway.app](https://railway.app) and create a new empty project.
+
+#### 2 — Add managed infrastructure
+
+In the Railway dashboard click **New Service → Database** and add:
+
+| Plugin | Provides |
+|--------|----------|
+| **PostgreSQL** | `DATABASE_URL` — injected into worker + api automatically |
+| **Redis** | `REDIS_URL` — injected into worker + api automatically |
+
+Railway runs the Postgres schema automatically from `postgres/init.sql` if you mount it as an init script — otherwise run it manually via the Railway psql console after first deploy:
+
+```sql
+-- paste contents of postgres/init.sql into the Railway PostgreSQL console
+```
+
+#### 3 — Add the worker service
+
+Click **New Service → GitHub Repo**, select this repo, and set:
+
+| Setting | Value |
+|---------|-------|
+| Root Directory | `worker` |
+| Builder | Dockerfile |
+
+Under **Variables**, add:
+
+```
+REDIS_URL    = ${{Redis.REDIS_URL}}
+DATABASE_URL = ${{Postgres.DATABASE_URL}}
+WORKER_MIN   = 2
+WORKER_MAX   = 8
+LOG_LEVEL    = info
+```
+
+#### 4 — Add the API service
+
+Add another GitHub service from the same repo:
+
+| Setting | Value |
+|---------|-------|
+| Root Directory | `api` |
+| Builder | Dockerfile |
+
+Under **Variables**, add:
+
+```
+REDIS_URL    = ${{Redis.REDIS_URL}}
+DATABASE_URL = ${{Postgres.DATABASE_URL}}
+JWT_SECRET   = <run: openssl rand -hex 32>
+NODE_ENV     = production
+CORS_ORIGIN  = https://${{dashboard.RAILWAY_PUBLIC_DOMAIN}}
+```
+
+Railway injects `PORT` automatically — no need to set it.
+
+#### 5 — Add the dashboard service
+
+Add a third GitHub service:
+
+| Setting | Value |
+|---------|-------|
+| Root Directory | `dashboard` |
+| Builder | Dockerfile |
+
+The dashboard is a static Vite build served by nginx. `VITE_API_URL` and `VITE_WS_URL` must be set as **build-time** variables (not runtime) because Vite bakes them into the bundle:
+
+```
+VITE_API_URL = https://${{api.RAILWAY_PUBLIC_DOMAIN}}
+VITE_WS_URL  = wss://${{api.RAILWAY_PUBLIC_DOMAIN}}
+```
+
+#### 6 — Deploy
+
+Click **Deploy** on each service (or push to `main` — Railway auto-deploys on push). The build order doesn't matter; the worker and API will retry their Redis/Postgres connections until the plugins are ready.
+
+### Service URLs
+
+After deploy, Railway assigns a public domain to each service. Find them under each service → **Settings → Networking → Public Domain**.
+
+| Service | Notes |
+|---------|-------|
+| `dashboard` | Your app's public URL — share this |
+| `api` | Referenced by dashboard as `VITE_API_URL` |
+| `worker` | No public URL needed — internal only |
+
+### Free tier notes
+
+- Railway's free Starter plan includes 500 hours/month and $5 credit — enough to run Taskfire continuously.
+- Set `WORKER_MIN=1` and `WORKER_MAX=4` on the free tier to stay within the shared vCPU limits.
+- The `sleepApplication` setting is intentionally **not** enabled — the worker must stay live to process jobs. Upgrade to a Hobby plan ($5/month) for always-on services.
 
 ---
 
