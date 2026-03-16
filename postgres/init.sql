@@ -4,19 +4,13 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ── Enum types ────────────────────────────────────────────────────────────────
 
+-- Status values match the Go worker constants (StatusActive="active", StatusDead="dead")
 CREATE TYPE job_status AS ENUM (
     'pending',
-    'running',
+    'active',
     'completed',
     'failed',
-    'cancelled',
-    'dead_letter'
-);
-
-CREATE TYPE job_priority AS ENUM (
-    'high',
-    'medium',
-    'low'
+    'dead'
 );
 
 -- ── updated_at trigger function ────────────────────────────────────────────────
@@ -35,20 +29,23 @@ CREATE TABLE IF NOT EXISTS jobs (
     id                  UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
     type                TEXT         NOT NULL,
     payload             JSONB        NOT NULL DEFAULT '{}',
-    priority            job_priority NOT NULL DEFAULT 'medium',
+    -- priority stored as integer: 300=high, 200=medium, 100=low
+    priority            INTEGER      NOT NULL DEFAULT 200,
     status              job_status   NOT NULL DEFAULT 'pending',
-    retries             INTEGER      NOT NULL DEFAULT 0,
+    retry_count         INTEGER      NOT NULL DEFAULT 0,
     max_retries         INTEGER      NOT NULL DEFAULT 3,
-    error_message       TEXT,
+    error               TEXT,
+    dependencies        JSONB        NOT NULL DEFAULT '[]',
     created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     scheduled_at        TIMESTAMPTZ,
     started_at          TIMESTAMPTZ,
     completed_at        TIMESTAMPTZ,
+    failed_at           TIMESTAMPTZ,
 
-    CONSTRAINT retries_non_negative     CHECK (retries     >= 0),
-    CONSTRAINT max_retries_non_negative CHECK (max_retries >= 0),
-    CONSTRAINT retries_lte_max          CHECK (retries     <= max_retries)
+    CONSTRAINT retry_count_non_negative  CHECK (retry_count  >= 0),
+    CONSTRAINT max_retries_non_negative  CHECK (max_retries  >= 0),
+    CONSTRAINT retry_count_lte_max       CHECK (retry_count  <= max_retries)
 );
 
 CREATE TRIGGER trg_jobs_updated_at
@@ -59,7 +56,7 @@ CREATE TRIGGER trg_jobs_updated_at
 -- Covering index for the queue-claim query: pending jobs ordered by priority
 -- and creation time (FIFO within the same priority).
 CREATE INDEX IF NOT EXISTS idx_jobs_status_priority_created
-    ON jobs (status, priority, created_at ASC);
+    ON jobs (status, priority DESC, created_at ASC);
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status
     ON jobs (status);
@@ -145,7 +142,8 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
     schedule    TEXT        NOT NULL,
     job_type    TEXT        NOT NULL,
     payload     JSONB       NOT NULL DEFAULT '{}',
-    priority    job_priority NOT NULL DEFAULT 'medium',
+    -- priority stored as integer: 300=high, 200=medium, 100=low
+    priority    INTEGER     NOT NULL DEFAULT 200,
     enabled     BOOLEAN     NOT NULL DEFAULT TRUE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -162,13 +160,12 @@ CREATE TRIGGER trg_cron_jobs_updated_at
 -- Convenience view used by the API /metrics/summary endpoint.
 CREATE OR REPLACE VIEW job_status_counts AS
 SELECT
-    COUNT(*) FILTER (WHERE status = 'pending')     AS pending,
-    COUNT(*) FILTER (WHERE status = 'running')     AS running,
-    COUNT(*) FILTER (WHERE status = 'completed')   AS completed,
-    COUNT(*) FILTER (WHERE status = 'failed')      AS failed,
-    COUNT(*) FILTER (WHERE status = 'cancelled')   AS cancelled,
-    COUNT(*) FILTER (WHERE status = 'dead_letter') AS dead_letter,
-    COUNT(*) FILTER (WHERE status IN ('completed', 'failed', 'dead_letter')) AS total_processed,
+    COUNT(*) FILTER (WHERE status = 'pending')   AS pending,
+    COUNT(*) FILTER (WHERE status = 'active')    AS active,
+    COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+    COUNT(*) FILTER (WHERE status = 'failed')    AS failed,
+    COUNT(*) FILTER (WHERE status = 'dead')      AS dead,
+    COUNT(*) FILTER (WHERE status IN ('completed', 'failed', 'dead')) AS total_processed,
     ROUND(
         AVG(
             EXTRACT(EPOCH FROM (completed_at - started_at)) * 1000
@@ -179,5 +176,5 @@ FROM jobs;
 -- ── Seed data ──────────────────────────────────────────────────────────────────
 
 INSERT INTO cron_jobs (name, schedule, job_type, payload, priority) VALUES
-    ('heartbeat', '*/5 * * * *', 'noop', '{"task": "heartbeat"}', 'low')
+    ('heartbeat', '*/5 * * * *', 'noop', '{"task": "heartbeat"}', 100)
 ON CONFLICT (name) DO NOTHING;

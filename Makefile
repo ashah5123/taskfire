@@ -18,7 +18,7 @@ CYAN   := \033[36m
 
 .PHONY: help dev build push migrate logs stop clean test \
         infra worker-dev api-dev dashboard-dev install \
-        test-worker test-api lint ps
+        test-worker test-api test-dashboard lint ps
 
 # ── Help ──────────────────────────────────────────────────────────────────────
 
@@ -153,7 +153,7 @@ clean:
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
-test: test-worker test-api
+test: test-worker test-api test-dashboard
 	@echo "$(GREEN)✓  All tests passed$(RESET)"
 
 test-worker:
@@ -163,6 +163,10 @@ test-worker:
 test-api:
 	@echo "$(GREEN)▶  Running Node.js API tests…$(RESET)"
 	cd api && npm test
+
+test-dashboard:
+	@echo "$(GREEN)▶  Running React dashboard tests…$(RESET)"
+	cd dashboard && npm test
 
 # ── Lint ──────────────────────────────────────────────────────────────────────
 

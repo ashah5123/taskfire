@@ -23,13 +23,9 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 
 # ── Stage 2: minimal runtime image ────────────────────────────────────────────
 
-FROM scratch
+FROM alpine:3.19
 
-# TLS root certificates — required for any outbound HTTPS calls.
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-
-# IANA time-zone data — required by the cron scheduler.
-COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+RUN apk add --no-cache ca-certificates tzdata wget
 
 # The statically-linked binary is the only runtime artefact.
 COPY --from=builder /out/taskfire-worker /taskfire-worker

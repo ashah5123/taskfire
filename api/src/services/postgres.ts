@@ -53,13 +53,14 @@ export async function closePostgres(): Promise<void> {
  * Execute a single parameterised query and return all rows.
  * Acquires and releases a pool connection automatically.
  */
-export async function query<T = Record<string, unknown>>(
+export async function query<T extends Record<string, unknown> = Record<string, unknown>>(
   sql: string,
   params: unknown[] = []
 ): Promise<T[]> {
   const client = await getPool().connect()
   try {
-    const result: QueryResult<T> = await client.query<T>(sql, params)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result: QueryResult<any> = await client.query(sql, params)
     return result.rows
   } finally {
     client.release()
