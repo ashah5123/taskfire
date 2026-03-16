@@ -1,66 +1,136 @@
-import { FastifyInstance } from 'fastify'
-import { getQueueDepth, getDLQDepth, getRecentCompleted } from '../services/redis'
-import { query } from '../services/postgres'
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
+import { z, ZodError } from 'zod'
+import {
+  getQueueDepthByLane,
+  getDLQDepth,
+  getDLQJobs,
+  getProcessingJobs,
+} from '../services/redis'
+import {
+  getStatusCounts,
+  getAvgProcessingMs,
+  getThroughput,
+  getActiveJobs,
+} from '../services/postgres'
 
-export async function metricsRoutes(fastify: FastifyInstance) {
-  // GET /api/metrics/overview
-  fastify.get('/overview', async (_req, reply) => {
-    const [queueDepth, dlqDepth, completed] = await Promise.all([
-      getQueueDepth(),
+function zodError(reply: FastifyReply, err: ZodError): FastifyReply {
+  return reply.status(400).send({
+    error: 'validation_error',
+    message: 'Request validation failed',
+    details: err.errors.map((e) => ({ path: e.path.join('.'), message: e.message })),
+  })
+}
+
+const DLQQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).optional().default(100),
+  offset: z.coerce.number().int().min(0).optional().default(0),
+})
+
+export async function metricsRoutes(fastify: FastifyInstance): Promise<void> {
+
+  // ── GET /summary — queue depth, counts, failure rate, avg processing time ─
+  fastify.get('/summary', async (_req: FastifyRequest, reply: FastifyReply) => {
+    const [queueDepth, dlqDepth, statusCounts, avgMs] = await Promise.all([
+      getQueueDepthByLane(),
       getDLQDepth(),
-      getRecentCompleted(1000),
+      getStatusCounts(),
+      getAvgProcessingMs(),
     ])
 
-    const completedJobs = completed.map((s) => {
-      try { return JSON.parse(s) } catch { return null }
-    }).filter(Boolean)
+    const total = statusCounts.completed + statusCounts.failed + statusCounts.dead
+    const failureRate = total > 0
+      ? (statusCounts.failed + statusCounts.dead) / total
+      : 0
 
-    const [statusCounts] = await Promise.all([
-      query<{ status: string; count: string }>(
-        `SELECT status, COUNT(*) as count FROM jobs GROUP BY status`
-      ),
-    ])
-
-    const byStatus = Object.fromEntries(statusCounts.map((r) => [r.status, parseInt(r.count, 10)]))
-
-    reply.send({
+    return reply.send({
       queue_depth: queueDepth,
       dlq_depth: dlqDepth,
-      by_status: byStatus,
-      completed_last_1k: completedJobs.length,
+      counts: {
+        pending: statusCounts.pending,
+        active: statusCounts.active,
+        completed: statusCounts.completed,
+        failed: statusCounts.failed,
+        dead: statusCounts.dead,
+        total_processed: total,
+      },
+      failure_rate: parseFloat(failureRate.toFixed(4)),
+      avg_processing_ms: avgMs,
     })
   })
 
-  // GET /api/metrics/throughput — jobs/minute over last hour
-  fastify.get('/throughput', async (_req, reply) => {
-    const rows = await query<{ minute: string; count: string }>(
-      `SELECT date_trunc('minute', completed_at) as minute, COUNT(*) as count
-       FROM jobs
-       WHERE completed_at > NOW() - INTERVAL '1 hour'
-       GROUP BY 1
-       ORDER BY 1`
-    )
-    reply.send(rows.map((r) => ({ time: r.minute, count: parseInt(r.count, 10) })))
+  // ── GET /throughput — jobs/minute over last 60 minutes ────────────────────
+  fastify.get('/throughput', async (_req: FastifyRequest, reply: FastifyReply) => {
+    const rows = await getThroughput()
+
+    // Fill in any missing minutes in the last hour with zero so the dashboard
+    // can render a contiguous time-series without gaps.
+    const byMinute = new Map(rows.map((r) => [r.time, r]))
+    const now = new Date()
+    const points = []
+
+    for (let i = 59; i >= 0; i--) {
+      const t = new Date(now)
+      t.setSeconds(0, 0)
+      t.setMinutes(t.getMinutes() - i)
+      const key = t.toISOString()
+      const existing = byMinute.get(key)
+      points.push({
+        time: key,
+        completed: existing?.completed ?? 0,
+        failed: existing?.failed ?? 0,
+      })
+    }
+
+    return reply.send(points)
   })
 
-  // GET /api/metrics/failure-rate — failure rate over last hour
-  fastify.get('/failure-rate', async (_req, reply) => {
-    const rows = await query<{ minute: string; total: string; failed: string }>(
-      `SELECT date_trunc('minute', created_at) as minute,
-              COUNT(*) as total,
-              SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
-       FROM jobs
-       WHERE created_at > NOW() - INTERVAL '1 hour'
-       GROUP BY 1
-       ORDER BY 1`
+  // ── GET /workers — active workers, utilization, in-flight jobs ────────────
+  fastify.get('/workers', async (_req: FastifyRequest, reply: FastifyReply) => {
+    const [activeDbJobs, processingRedis] = await Promise.all([
+      getActiveJobs(),
+      getProcessingJobs(),
+    ])
+
+    const now = Date.now()
+
+    const activeJobs = activeDbJobs.map((row) => ({
+      job_id: row.id,
+      job_type: row.type,
+      started_at: row.started_at.toISOString(),
+      running_for_ms: now - row.started_at.getTime(),
+    }))
+
+    // Cross-reference Postgres active jobs with Redis processing hash so that
+    // the response reflects the same set even if the two stores have brief lag.
+    const processingIds = new Set(
+      processingRedis.map((j) => j.id as string).filter(Boolean)
     )
-    reply.send(
-      rows.map((r) => ({
-        time: r.minute,
-        total: parseInt(r.total, 10),
-        failed: parseInt(r.failed, 10),
-        rate: parseInt(r.total, 10) > 0 ? parseInt(r.failed, 10) / parseInt(r.total, 10) : 0,
-      }))
-    )
+
+    return reply.send({
+      active_workers: activeJobs.length,
+      in_flight_redis: processingRedis.length,
+      discrepancy: Math.abs(activeJobs.length - processingRedis.length),
+      active_jobs: activeJobs,
+      processing_ids_redis: [...processingIds],
+    })
+  })
+
+  // ── GET /dead-letter — list DLQ entries with failure details ─────────────
+  fastify.get('/dead-letter', async (req: FastifyRequest, reply: FastifyReply) => {
+    const parsed = DLQQuerySchema.safeParse(req.query)
+    if (!parsed.success) return zodError(reply, parsed.error)
+
+    const { limit, offset } = parsed.data
+    const [jobs, total] = await Promise.all([
+      getDLQJobs(limit, offset),
+      getDLQDepth(),
+    ])
+
+    return reply.send({
+      jobs,
+      total,
+      limit,
+      offset,
+    })
   })
 }

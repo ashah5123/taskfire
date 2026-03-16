@@ -1,56 +1,118 @@
 import { WebSocket } from 'ws'
 import { FastifyRequest } from 'fastify'
-import { getQueueDepth, getDLQDepth } from '../services/redis'
-import { query } from '../services/postgres'
+import {
+  getQueueDepthByLane,
+  getDLQDepth,
+  subscribeToEvents,
+} from '../services/redis'
+import { getStatusCounts } from '../services/postgres'
+import type { JobEvent } from '../types/job'
+
+// ── Client registry ───────────────────────────────────────────────────────────
 
 const clients = new Set<WebSocket>()
 
-// Broadcast to all connected clients
-export function broadcast(data: unknown) {
+export function broadcast(data: unknown): void {
   const message = JSON.stringify(data)
   for (const ws of clients) {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(message)
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(message, (err) => {
+        if (err) clients.delete(ws)
+      })
     }
   }
 }
 
-// Push live metrics every 2 seconds
-setInterval(async () => {
-  if (clients.size === 0) return
-  try {
-    const [queueDepth, dlqDepth, activeRows] = await Promise.all([
-      getQueueDepth(),
-      getDLQDepth(),
-      query<{ count: string }>(`SELECT COUNT(*) as count FROM jobs WHERE status = 'active'`),
-    ])
-    broadcast({
-      type: 'metrics',
+// ── Redis pub/sub event forwarding ────────────────────────────────────────────
+
+let unsubscribe: (() => Promise<void>) | null = null
+
+export async function startEventForwarding(): Promise<void> {
+  unsubscribe = await subscribeToEvents((message) => {
+    try {
+      const event = JSON.parse(message) as JobEvent
+      broadcast({ type: 'job_event', payload: event })
+    } catch {
+      // Ignore malformed messages from Redis.
+    }
+  })
+}
+
+export async function stopEventForwarding(): Promise<void> {
+  if (unsubscribe) {
+    await unsubscribe()
+    unsubscribe = null
+  }
+}
+
+// ── Periodic metrics push ─────────────────────────────────────────────────────
+
+let metricsInterval: ReturnType<typeof setInterval> | null = null
+
+export function startMetricsBroadcast(): void {
+  metricsInterval = setInterval(async () => {
+    if (clients.size === 0) return
+    try {
+      const [queueDepth, dlqDepth, statusCounts] = await Promise.all([
+        getQueueDepthByLane(),
+        getDLQDepth(),
+        getStatusCounts(),
+      ])
+      broadcast({
+        type: 'metrics',
+        payload: {
+          queue_depth: queueDepth,
+          dlq_depth: dlqDepth,
+          active_jobs: statusCounts.active,
+          pending_jobs: statusCounts.pending,
+          timestamp: new Date().toISOString(),
+        },
+      })
+    } catch {
+      // Redis/Postgres may be temporarily unavailable; skip this tick.
+    }
+  }, 2000)
+}
+
+export function stopMetricsBroadcast(): void {
+  if (metricsInterval !== null) {
+    clearInterval(metricsInterval)
+    metricsInterval = null
+  }
+}
+
+// ── WebSocket connection handler ──────────────────────────────────────────────
+
+export function wsHandler(socket: WebSocket, _req: FastifyRequest): void {
+  clients.add(socket)
+
+  socket.send(
+    JSON.stringify({
+      type: 'connected',
       payload: {
-        queue_depth: queueDepth,
-        dlq_depth: dlqDepth,
-        active_jobs: parseInt(activeRows[0]?.count ?? '0', 10),
+        message: 'Taskfire live updates connected',
+        clients: clients.size,
         timestamp: new Date().toISOString(),
       },
     })
-  } catch {
-    // Redis/Postgres may not be ready yet
-  }
-}, 2000)
+  )
 
-export function wsHandler(socket: WebSocket, _req: FastifyRequest) {
-  clients.add(socket)
-
-  socket.send(JSON.stringify({ type: 'connected', payload: { message: 'Taskfire live updates connected' } }))
-
-  socket.on('message', async (raw) => {
+  socket.on('message', (raw) => {
+    let msg: unknown
     try {
-      const msg = JSON.parse(raw.toString())
-      if (msg.type === 'ping') {
-        socket.send(JSON.stringify({ type: 'pong' }))
-      }
+      msg = JSON.parse(raw.toString())
     } catch {
-      // ignore malformed messages
+      socket.send(JSON.stringify({ type: 'error', payload: { message: 'Invalid JSON' } }))
+      return
+    }
+
+    if (
+      typeof msg === 'object' &&
+      msg !== null &&
+      'type' in msg &&
+      (msg as { type: unknown }).type === 'ping'
+    ) {
+      socket.send(JSON.stringify({ type: 'pong', payload: { timestamp: new Date().toISOString() } }))
     }
   })
 
