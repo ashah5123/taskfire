@@ -27,7 +27,7 @@ scrape_configs:
   - job_name: taskfire-api
     static_configs:
       - targets:
-          - api:3001
+          - api:3000
         labels:
           service:   api
           language:  nodejs

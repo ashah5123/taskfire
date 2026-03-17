@@ -13,14 +13,12 @@
 [![Node.js](https://img.shields.io/badge/Node.js-20-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-f0a500?style=flat-square)](LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/ashah5123/taskfire/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/ashah5123/taskfire/actions)
 [![Redis](https://img.shields.io/badge/Redis-7-DC382D?style=flat-square&logo=redis&logoColor=white)](https://redis.io)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-4169E1?style=flat-square&logo=postgresql&logoColor=white)](https://www.postgresql.org)
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/ashah5123/taskfire)
 
 **A production-grade distributed background job engine with a priority queue, DAG dependency resolver, and real-time dashboard.**
 
-[Getting Started](#getting-started) · [Deploy on Railway](#deploy-on-railway) · [Architecture](#architecture) · [API Reference](#api-reference) · [How It Works](#how-it-works) · [Contributing](#contributing)
+[Getting Started](#getting-started) · [Architecture](#architecture) · [API Reference](#api-reference) · [How It Works](#how-it-works) · [Contributing](#contributing)
 
 </div>
 
@@ -35,61 +33,55 @@ Taskfire is a self-hosted background job processing system built for engineers w
 ## Architecture
 
 ```
-  ┌──────────────────────────────────────────────────────────────────┐
-  │                        Nginx :80                                  │
-  │          rate-limit · gzip · CSP headers · SPA fallback          │
-  └──────────────────┬──────────────────────────┬────────────────────┘
-                     │  /api/*  /ws             │  / (static)
-                     ▼                          ▼
-         ┌───────────────────────┐   ┌────────────────────────┐
-         │   Fastify API :3000   │   │  React 18 Dashboard    │
-         │   TypeScript · Zod    │   │  Vite · Tailwind CSS   │
-         │   @fastify/websocket  │◄──│  TanStack Query        │
-         └──────┬──────────┬─────┘   │  Recharts              │
-                │          │ WS push  └────────────────────────┘
-         REST   │          │ every ~2 s
-                │          │
-  ┌─────────────▼──────┐  ┌▼───────────────────────────────────────┐
-  │  PostgreSQL :5432  │  │  Redis :6379                            │
-  │  jobs              │  │  taskfire:queue:high   (sorted set)     │
-  │  job_dependencies  │  │  taskfire:queue:medium (sorted set)     │
-  │  job_logs          │  │  taskfire:queue:low    (sorted set)     │
-  │  job_metrics       │  │  taskfire:delayed      (sorted set)     │
-  │  cron_jobs         │  │  taskfire:processing   (hash map)       │
-  └─────────┬──────────┘  │  taskfire:dlq          (list)          │
-            │              │  taskfire:lock:<id>    (string w/ TTL) │
-            │              └──────────────┬─────────────────────────┘
-            │                             │  BZPOPMIN (blocking pop)
-            │                             ▼
-            │              ┌──────────────────────────────────────┐
-            │              │         Go Worker Pool               │
-            │              │  ┌────────┐ ┌────────┐ ┌────────┐   │
-            │              │  │ Worker │ │ Worker │ │ Worker │   │  MinWorkers–MaxWorkers
-            │              │  │   #1   │ │   #2   │ │  #N    │   │  scale on queue depth
-            │              │  └────────┘ └────────┘ └────────┘   │
-            │              │                                       │
-            │              │  ┌───────────────────────────────┐   │
-            │              │  │  DAG Dependency Engine         │   │
-            │              │  │  Kahn's BFS · cycle detection  │   │
-            │              │  └───────────────────────────────┘   │
-            │              │                                       │
-            │              │  ┌───────────────────────────────┐   │
-            │              │  │  Exponential Backoff Retry     │   │
-            │              │  │  per-type config · jitter      │   │
-            │              │  └───────────────────────────────┘   │
-            │              │                                       │
-            │              │  ┌───────────────────────────────┐   │
-            │              │  │  Cron Scheduler               │   │
-            │              │  │  robfig/cron · delayed poller  │   │
-            │              │  └───────────────────────────────┘   │
-            └──────────────│  job status writes · log appends     │
-                           └──────────────────┬───────────────────┘
-                                              │  /metrics
-                                              ▼
-                           ┌──────────────────────────────────────┐
-                           │  Prometheus :9091                    │
-                           │  10 s scrape · 15-day TSDB retention │
-                           └──────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  Browser                                                                 │
+  │  Dashboard :3000  ──────────────────────────────────►  API :8080        │
+  │  (React 18 · Vite · Tailwind)     REST + WebSocket   (Fastify · Zod)   │
+  └──────────────────────────────────────────────────────────┬──────────────┘
+                                                             │
+                                              ┌──────────────┴──────────────┐
+                                              │                             │
+                                    ┌─────────▼──────────┐  ┌─────────────▼────────────────────────┐
+                                    │  PostgreSQL :5432   │  │  Redis :6379                          │
+                                    │  jobs               │  │  taskfire:queue:high   (sorted set)   │
+                                    │  job_dependencies   │  │  taskfire:queue:medium (sorted set)   │
+                                    │  job_logs           │  │  taskfire:queue:low    (sorted set)   │
+                                    │  job_metrics        │  │  taskfire:delayed      (sorted set)   │
+                                    │  cron_jobs          │  │  taskfire:processing   (hash map)     │
+                                    └─────────┬───────────┘  │  taskfire:dlq          (list)        │
+                                              │               │  taskfire:lock:<id>    (string TTL)  │
+                                              │               └──────────────┬────────────────────────┘
+                                              │                              │  BZPOPMIN (blocking pop)
+                                              │                              ▼
+                                              │               ┌──────────────────────────────────────┐
+                                              │               │         Go Worker Pool               │
+                                              │               │  ┌────────┐ ┌────────┐ ┌────────┐   │
+                                              │               │  │ Worker │ │ Worker │ │ Worker │   │  MinWorkers–MaxWorkers
+                                              │               │  │   #1   │ │   #2   │ │  #N    │   │  scale on queue depth
+                                              │               │  └────────┘ └────────┘ └────────┘   │
+                                              │               │                                      │
+                                              │               │  ┌───────────────────────────────┐   │
+                                              │               │  │  DAG Dependency Engine         │   │
+                                              │               │  │  Kahn's BFS · cycle detection  │   │
+                                              │               │  └───────────────────────────────┘   │
+                                              │               │                                      │
+                                              │               │  ┌───────────────────────────────┐   │
+                                              │               │  │  Exponential Backoff Retry     │   │
+                                              │               │  │  per-type config · jitter      │   │
+                                              │               │  └───────────────────────────────┘   │
+                                              │               │                                      │
+                                              │               │  ┌───────────────────────────────┐   │
+                                              │               │  │  Cron Scheduler               │   │
+                                              │               │  │  robfig/cron · delayed poller  │   │
+                                              │               │  └───────────────────────────────┘   │
+                                              └───────────────│  job status writes · log appends     │
+                                                              └──────────────────┬────────────────────┘
+                                                                                 │  /metrics
+                                                                                 ▼
+                                                              ┌──────────────────────────────────────┐
+                                                              │  Prometheus :9090                    │
+                                                              │  10 s scrape · 15-day TSDB retention │
+                                                              └──────────────────────────────────────┘
 ```
 
 ---
@@ -108,7 +100,6 @@ Taskfire is a self-hosted background job processing system built for engineers w
 | **Data fetching** | TanStack Query v5 | Stale-while-revalidate caching, automatic background refetch, and devtools built in — no custom fetch layer needed |
 | **Charts** | Recharts | Composable SVG chart primitives that compose naturally with React's rendering model |
 | **Metrics** | Prometheus client (Go) | Idiomatic instrumentation with counters, histograms, and gauges; Prometheus scrape model works without inbound access to the worker |
-| **Reverse proxy** | Nginx 1.25 | Connection keep-alive, gzip, strict security headers, and SPA fallback in ~50 lines of config |
 | **Containers** | Docker + Compose | Multi-stage Dockerfiles produce minimal images (~15 MB for the Go binary, ~50 MB for Node); Compose wires health checks and dependency ordering |
 
 ---
@@ -152,113 +143,6 @@ The worker exposes a `/metrics` endpoint with:
 
 ---
 
-## Deploy on Railway
-
-Railway is the fastest way to get Taskfire running in the cloud — no server management, free tier available, and the managed Redis and PostgreSQL plugins wire up automatically.
-
-### One-click deploy
-
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/ashah5123/taskfire)
-
-### Manual setup (5 minutes)
-
-#### 1 — Create a Railway project
-
-Sign up at [railway.app](https://railway.app) and create a new empty project.
-
-#### 2 — Add managed infrastructure
-
-In the Railway dashboard click **New Service → Database** and add:
-
-| Plugin | Provides |
-|--------|----------|
-| **PostgreSQL** | `DATABASE_URL` — injected into worker + api automatically |
-| **Redis** | `REDIS_URL` — injected into worker + api automatically |
-
-Railway runs the Postgres schema automatically from `postgres/init.sql` if you mount it as an init script — otherwise run it manually via the Railway psql console after first deploy:
-
-```sql
--- paste contents of postgres/init.sql into the Railway PostgreSQL console
-```
-
-#### 3 — Add the worker service
-
-Click **New Service → GitHub Repo**, select this repo, and set:
-
-| Setting | Value |
-|---------|-------|
-| Root Directory | `worker` |
-| Builder | Dockerfile |
-
-Under **Variables**, add:
-
-```
-REDIS_URL    = ${{Redis.REDIS_URL}}
-DATABASE_URL = ${{Postgres.DATABASE_URL}}
-WORKER_MIN   = 2
-WORKER_MAX   = 8
-LOG_LEVEL    = info
-```
-
-#### 4 — Add the API service
-
-Add another GitHub service from the same repo:
-
-| Setting | Value |
-|---------|-------|
-| Root Directory | `api` |
-| Builder | Dockerfile |
-
-Under **Variables**, add:
-
-```
-REDIS_URL    = ${{Redis.REDIS_URL}}
-DATABASE_URL = ${{Postgres.DATABASE_URL}}
-JWT_SECRET   = <run: openssl rand -hex 32>
-NODE_ENV     = production
-CORS_ORIGIN  = https://${{dashboard.RAILWAY_PUBLIC_DOMAIN}}
-```
-
-Railway injects `PORT` automatically — no need to set it.
-
-#### 5 — Add the dashboard service
-
-Add a third GitHub service:
-
-| Setting | Value |
-|---------|-------|
-| Root Directory | `dashboard` |
-| Builder | Dockerfile |
-
-The dashboard is a static Vite build served by nginx. `VITE_API_URL` and `VITE_WS_URL` must be set as **build-time** variables (not runtime) because Vite bakes them into the bundle:
-
-```
-VITE_API_URL = https://${{api.RAILWAY_PUBLIC_DOMAIN}}
-VITE_WS_URL  = wss://${{api.RAILWAY_PUBLIC_DOMAIN}}
-```
-
-#### 6 — Deploy
-
-Click **Deploy** on each service (or push to `main` — Railway auto-deploys on push). The build order doesn't matter; the worker and API will retry their Redis/Postgres connections until the plugins are ready.
-
-### Service URLs
-
-After deploy, Railway assigns a public domain to each service. Find them under each service → **Settings → Networking → Public Domain**.
-
-| Service | Notes |
-|---------|-------|
-| `dashboard` | Your app's public URL — share this |
-| `api` | Referenced by dashboard as `VITE_API_URL` |
-| `worker` | No public URL needed — internal only |
-
-### Free tier notes
-
-- Railway's free Starter plan includes 500 hours/month and $5 credit — enough to run Taskfire continuously.
-- Set `WORKER_MIN=1` and `WORKER_MAX=4` on the free tier to stay within the shared vCPU limits.
-- The `sleepApplication` setting is intentionally **not** enabled — the worker must stay live to process jobs. Upgrade to a Hobby plan ($5/month) for always-on services.
-
----
-
 ## Getting Started
 
 ### Prerequisites
@@ -275,24 +159,23 @@ After deploy, Railway assigns a public domain to each service. Find them under e
 ```bash
 git clone https://github.com/aaravshah/taskfire.git
 cd taskfire
-cp .env.example .env
-make build
-make dev
+docker compose up --build
 ```
 
-That's it. All six services start with health checks. Open [http://localhost](http://localhost) for the dashboard.
+All services start with health checks and dependency ordering. Once everything is healthy:
 
 | Service | URL |
 |---------|-----|
-| Dashboard | http://localhost |
-| API | http://localhost:3000 |
-| Worker metrics | http://localhost:9090/metrics |
-| Prometheus | http://localhost:9091 |
+| Dashboard | http://localhost:3000 |
+| API | http://localhost:8080 |
+| Prometheus | http://localhost:9090 |
+| Redis | localhost:6379 |
+| PostgreSQL | localhost:5432 |
 
 ### Enqueue your first job
 
 ```bash
-curl -s -X POST http://localhost:3000/api/jobs \
+curl -s -X POST http://localhost:8080/api/jobs \
   -H 'Content-Type: application/json' \
   -d '{
     "type": "send-email",
@@ -307,7 +190,7 @@ curl -s -X POST http://localhost:3000/api/jobs \
 Start only infrastructure (Redis + Postgres):
 
 ```bash
-make infra
+docker compose up redis postgres
 ```
 
 Then in separate terminals:
@@ -330,9 +213,9 @@ make dashboard-dev
 
 ```bash
 make test           # all suites
-make test-worker    # Go: testify + miniredis (22 tests)
-make test-api       # Jest + supertest (29 tests)
-make test-dashboard # Vitest + React Testing Library (40 tests)
+make test-worker    # Go: testify + miniredis
+make test-api       # Jest + supertest
+make test-dashboard # Vitest + React Testing Library
 ```
 
 ---
@@ -355,7 +238,7 @@ All endpoints are prefixed with `/api`. Errors return `{ "error": "<message>" }`
 #### `POST /api/jobs`
 
 ```bash
-curl -X POST http://localhost:3000/api/jobs \
+curl -X POST http://localhost:8080/api/jobs \
   -H 'Content-Type: application/json' \
   -d '{
     "type":         "process-video",
@@ -379,7 +262,7 @@ curl -X POST http://localhost:3000/api/jobs \
 #### `GET /api/jobs`
 
 ```bash
-curl 'http://localhost:3000/api/jobs?status=failed&priority=high&page=1&limit=25'
+curl 'http://localhost:8080/api/jobs?status=failed&priority=high&page=1&limit=25'
 ```
 
 | Parameter | Type | Description |
@@ -393,7 +276,7 @@ curl 'http://localhost:3000/api/jobs?status=failed&priority=high&page=1&limit=25
 #### `GET /api/jobs/:id`
 
 ```bash
-curl http://localhost:3000/api/jobs/d290f1ee-6c54-4b01-90e6-d701748f0851
+curl http://localhost:8080/api/jobs/d290f1ee-6c54-4b01-90e6-d701748f0851
 ```
 
 #### `DELETE /api/jobs/:id`
@@ -401,7 +284,7 @@ curl http://localhost:3000/api/jobs/d290f1ee-6c54-4b01-90e6-d701748f0851
 Cancels a `pending` job. Returns `409` if the job is already `active` or `completed`.
 
 ```bash
-curl -X DELETE http://localhost:3000/api/jobs/d290f1ee-6c54-4b01-90e6-d701748f0851
+curl -X DELETE http://localhost:8080/api/jobs/d290f1ee-6c54-4b01-90e6-d701748f0851
 ```
 
 #### `POST /api/jobs/:id/retry`
@@ -409,13 +292,13 @@ curl -X DELETE http://localhost:3000/api/jobs/d290f1ee-6c54-4b01-90e6-d701748f08
 Re-queues a `failed` or `dead` job at its original priority, resetting the retry counter to 0.
 
 ```bash
-curl -X POST http://localhost:3000/api/jobs/d290f1ee-6c54-4b01-90e6-d701748f0851/retry
+curl -X POST http://localhost:8080/api/jobs/d290f1ee-6c54-4b01-90e6-d701748f0851/retry
 ```
 
 #### `GET /api/jobs/:id/logs`
 
 ```bash
-curl http://localhost:3000/api/jobs/d290f1ee-6c54-4b01-90e6-d701748f0851/logs
+curl http://localhost:8080/api/jobs/d290f1ee-6c54-4b01-90e6-d701748f0851/logs
 ```
 
 Returns an array of `{ level, message, metadata, timestamp }` log entries written by the handler during execution.
@@ -434,7 +317,7 @@ Returns an array of `{ level, message, metadata, timestamp }` log entries writte
 #### `GET /api/metrics/summary`
 
 ```bash
-curl http://localhost:3000/api/metrics/summary
+curl http://localhost:8080/api/metrics/summary
 ```
 
 ```json
@@ -475,14 +358,14 @@ Returns 60 data points, one per minute, zero-filled for minutes with no activity
 #### `GET /api/metrics/dead-letter`
 
 ```bash
-curl 'http://localhost:3000/api/metrics/dead-letter?limit=25&offset=0'
+curl 'http://localhost:8080/api/metrics/dead-letter?limit=25&offset=0'
 ```
 
 ---
 
 ### WebSocket
 
-Connect to `ws://localhost/ws` (through Nginx) or `ws://localhost:3000/ws` (direct).
+Connect to `ws://localhost:8080/ws`.
 
 **Server → Client events:**
 
@@ -507,23 +390,23 @@ Connect to `ws://localhost/ws` (through Nginx) or `ws://localhost:3000/ws` (dire
 
 ## Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `REDIS_URL` | ✓ | `redis://localhost:6379` | Redis connection URL |
-| `DATABASE_URL` | ✓ | `postgresql://taskfire:taskfire@localhost:5432/taskfire` | PostgreSQL connection URL |
-| `POSTGRES_USER` | compose | `taskfire` | Postgres user (docker-compose init) |
-| `POSTGRES_PASSWORD` | compose | `taskfire` | Postgres password |
-| `POSTGRES_DB` | compose | `taskfire` | Postgres database name |
-| `API_PORT` | — | `3000` | Port the Fastify server binds to |
-| `CORS_ORIGIN` | — | `http://localhost` | Allowed CORS origin(s) |
-| `JWT_SECRET` | prod | — | ≥ 32-char secret for signing tokens |
-| `NODE_ENV` | — | `production` | `development` \| `production` \| `test` |
-| `WORKER_MIN` | — | `4` | Minimum goroutines in the worker pool |
-| `WORKER_MAX` | — | `32` | Maximum goroutines in the worker pool |
-| `METRICS_PORT` | — | `9090` | Worker Prometheus `/metrics` port |
-| `LOG_LEVEL` | — | `info` | `debug` \| `info` \| `warn` \| `error` |
-| `VITE_API_URL` | — | *(empty — relative)* | API base URL baked into the dashboard bundle |
-| `VITE_WS_URL` | — | *(empty — auto-detect)* | WebSocket origin baked into the bundle |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REDIS_URL` | `redis://redis:6379` | Redis connection URL (uses Docker service name internally) |
+| `DATABASE_URL` | `postgresql://taskfire:taskfire@postgres:5432/taskfire` | PostgreSQL connection URL |
+| `POSTGRES_USER` | `taskfire` | Postgres user (docker compose init) |
+| `POSTGRES_PASSWORD` | `taskfire` | Postgres password |
+| `POSTGRES_DB` | `taskfire` | Postgres database name |
+| `API_PORT` | `3000` | Port the Fastify server binds to inside the container |
+| `CORS_ORIGIN` | `http://localhost:3000` | Allowed CORS origin(s) |
+| `JWT_SECRET` | — | ≥ 32-char secret for signing tokens |
+| `NODE_ENV` | `production` | `development` \| `production` \| `test` |
+| `WORKER_MIN` | `4` | Minimum goroutines in the worker pool |
+| `WORKER_MAX` | `32` | Maximum goroutines in the worker pool |
+| `METRICS_PORT` | `9090` | Worker Prometheus `/metrics` port |
+| `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
+| `VITE_API_URL` | `http://localhost:8080` | API base URL baked into the dashboard bundle |
+| `VITE_WS_URL` | `ws://localhost:8080` | WebSocket origin baked into the bundle |
 
 ---
 
@@ -617,9 +500,10 @@ taskfire/
 ├── nginx/
 │   └── nginx.conf            Rate limiting, gzip, security headers, SPA fallback
 ├── prometheus/
-│   └── prometheus.yml        10 s scrape interval, worker + API targets
+│   └── prometheus.yml        10 s scrape interval, worker target
 ├── docker-compose.yml        Six-service orchestration with health checks
-├── Makefile                  Dev, build, test, lint, and deploy targets
+├── Makefile                  Dev, build, test, lint targets
+├── .env                      Local development environment variables
 └── .env.example              Annotated environment variable template
 ```
 
@@ -631,7 +515,6 @@ taskfire/
 make dev             Start all services (docker compose up --build -d)
 make infra           Start Redis + Postgres only
 make build           Build all Docker images
-make push            Tag and push to REGISTRY (default: ghcr.io/aaravshah)
 make migrate         Apply postgres/init.sql schema
 make logs            Tail logs from all services
 make stop            Stop all running containers
@@ -662,7 +545,7 @@ git clone https://github.com/<your-fork>/taskfire.git
 cd taskfire
 
 # Start infrastructure
-make infra
+docker compose up redis postgres -d
 
 # Install deps and run tests
 make install
